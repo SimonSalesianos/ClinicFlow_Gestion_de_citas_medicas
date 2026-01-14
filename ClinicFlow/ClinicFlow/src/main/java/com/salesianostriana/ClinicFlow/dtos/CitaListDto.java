@@ -4,7 +4,7 @@ import java.time.LocalDateTime;
 
 public record CitaListDto(
         Long id,
-        LocalDateTime fechaHora,
+        LocalDateTime fechaYhora,
         String estado,
         String nombrePaciente,
         String nombreProfesional
