@@ -19,8 +19,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
-@Service
 @RequiredArgsConstructor
+@Service
 public class CitaService {
 
     private final CitaRepository citaRepository;
@@ -28,152 +28,115 @@ public class CitaService {
     private final ProfesionalRepository profesionalRepository;
     private final ConsultaRepository consultaRepository;
 
-    public Page<CitaListDto> getCitas(String estado, Pageable pageable) {
-        Page<Cita> page = (estado == null || estado.isBlank())
-                ? citaRepository.findAll(pageable)
-                : citaRepository.findByEstado(estado, pageable);
-
-        return page.map(this::toCitaListDto);
-    }
-
-    public Page<CitaListDto> getCitasDePaciente(Long pacienteId, Pageable pageable) {
-        return citaRepository.findByPacienteId(pacienteId, pageable)
-                .map(this::toCitaListDto);
-    }
 
     @Transactional
-    public CitaDetailDto crearCita(CreateCitaRequest req) {
-
-        LocalDateTime fechaHora = req.fechaHora();
-
-        if (fechaHora.isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("No se pueden crear citas en el pasado");
-        }
-
-        Paciente paciente = pacienteRepository.findById(req.pacienteId())
-                .orElseThrow(() -> new RuntimeException("Paciente no encontrado: " + req.pacienteId()));
-
-        Profesional profesional = profesionalRepository.findById(req.profesionalId())
-                .orElseThrow(() -> new RuntimeException("Profesional no encontrado: " + req.profesionalId()));
-
-        if (citaRepository.existsByProfesionalIdAndFechaYhora(profesional.getId(), fechaHora)) {
-            throw new RuntimeException("El profesional ya tiene una cita en esa fecha y hora");
-        }
-
-        LocalDate dia = fechaHora.toLocalDate();
-        LocalDateTime inicio = dia.atStartOfDay();
-        LocalDateTime fin = dia.plusDays(1).atStartOfDay();
-
-        boolean yaTieneEseDia = citaRepository
-                .findByPacienteId(paciente.getId(), Pageable.unpaged())
-                .getContent()
-                .stream()
-                .anyMatch(c -> !c.getFechaYhora().isBefore(inicio) && c.getFechaYhora().isBefore(fin));
-
-        if (yaTieneEseDia) {
-            throw new RuntimeException("El paciente ya tiene una cita ese día");
-        }
-
-        Cita cita = Cita.builder()
-                .paciente(paciente)
-                .profesional(profesional)
-                .fechaYhora(fechaHora)
-                .estado("PROGRAMADA")
-                .build();
-
-        Cita saved = citaRepository.save(cita);
-        return toCitaDetailDto(saved);
+    public Page<Cita> getAll(Pageable pageable){
+        Page<Cita> citas = citaRepository.findAll(pageable);
+        if(citas.isEmpty()) throw new EntityNotFoundException("No hay citas");
+        return citas;
     }
 
-    @Transactional
-    public CitaDetailDto cancelarCita(Long id) {
+    public List<Cita> getCistasPorPaciente(Long pacienteId){
 
-        Cita cita = citaRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Cita no encontrada: " + id));
+        List<Cita> citasPorPaciente = citaRepository.findByPaciente_IdOrderByFechaHoraAsc(pacienteId);
 
-        if ("ATENDIDA".equalsIgnoreCase(cita.getEstado())) {
-            throw new RuntimeException("No se puede cancelar una cita ATENDIDA");
-        }
+        if(citasPorPaciente.isEmpty()) throw new IllegalArgumentException("No hay citas del paciente");
 
-        cita.setEstado("CANCELADA");
-        Cita saved = citaRepository.save(cita);
+        return citasPorPaciente;
 
-        return toCitaDetailDto(saved);
     }
 
-    @Transactional
-    public CitaDetailDto registrarConsulta(Long idCita, CreateConsultaRequest req) {
+    public List<Cita> getCistasPorEstado(Estado estado){
 
-        Cita cita = citaRepository.findById(idCita)
-                .orElseThrow(() -> new RuntimeException("Cita no encontrada: " + idCita));
+        List<Cita> citasPorEstado = citaRepository.findByEstado(estado);
+        if(citasPorEstado.isEmpty()) throw new IllegalArgumentException("No hay citas con ese estado");
+        return citasPorEstado;
 
-        if (!"PROGRAMADA".equalsIgnoreCase(cita.getEstado())) {
-            throw new RuntimeException("Solo se puede registrar consulta si la cita está PROGRAMADA");
-        }
+    }
 
-        if (consultaRepository.findByCitaId(idCita).isPresent()) {
-            throw new RuntimeException("Esa cita ya tiene una consulta registrada");
-        }
+    public List<Cita> getCitasPorRangoFecha(LocalDateTime fechaInicio, LocalDateTime fechaFin){
+        List<Cita> citasPorRango = citaRepository.findByFechaHoraBetween(fechaInicio,fechaFin);
+        if(citasPorRango.isEmpty()) throw new IllegalArgumentException("No hay citas en ese rango");
+        return citasPorRango;
+    }
 
-        Consulta consulta = Consulta.builder()
-                .observaciones(req.observaciones())
-                .diagnostico(req.diagnostico())
-                .fecha(LocalDate.now())
-                .cita(cita) // relación
-                .build();
+
+
+    public Cita crearCita(CreateCitaRequest citaRequest){
+
+        Paciente paciente = pacienteRepository.findById(citaRequest.pacienteId())
+                .orElseThrow(()-> new EntityNotFoundException("No se ha encontrado al paciente con id %d".formatted(citaRequest.pacienteId())));
+
+        Profesional profesional = profesionalRepository.findById(citaRequest.profesionalId())
+                .orElseThrow(()-> new EntityNotFoundException("No se ha encontrado al profesional con id %d".formatted(citaRequest.profesionalId())));
+
+        profesional.getCitas().forEach(cita ->{
+            if(cita.getFechaHora().isEqual(citaRequest.fechaHora()))
+                throw new IllegalArgumentException("El profesional ya tiene una cita en esa hora");
+        });
+
+        paciente.getCitas().forEach(cita->{
+            if(cita.getFechaHora().getDayOfMonth() == citaRequest.fechaHora().getDayOfMonth())
+                throw new IllegalArgumentException("Un paciente no puede tener más de una cita el mismo día");
+        });
+
+        if(citaRequest.fechaHora().isBefore(LocalDateTime.now()))
+            throw new IllegalArgumentException("No se pueden crear citas en el pasado");
+
+        Cita cita = toEntity(citaRequest,paciente,profesional);
+
+        paciente.addCita(cita);
+        profesional.addCita(cita);
+
+        return citaRepository.save(cita);
+
+    }
+
+    public Cita cancelarCita(Long citaId){
+        Cita cita = citaRepository.findById(citaId)
+                .orElseThrow(()->new EntityNotFoundException("Cita con id %d no encontrada".formatted(citaId)));
+
+        if(cita.getEstado() == Estado.ATENDIDA || cita.getEstado() == Estado.CANCELADA)
+            throw new IllegalArgumentException("Esta cita ya ha sido atendida o cancelada");
+
+        cita.setEstado(Estado.CANCELADA);
+
+        return citaRepository.save(cita);
+
+    }
+
+    public Cita registrarConsulta(Long citaId, CreateConsultaRequest consultaRequest){
+        Cita cita = citaRepository.findById(citaId)
+                .orElseThrow(()->new EntityNotFoundException("No se ha encontrado la cita con id %d".formatted(citaId)));
+
+        if(cita.getEstado() != Estado.PROGRAMADA)
+            throw new IllegalArgumentException("La cita ya está atendida o ha sido cancelada");
+
+        Consulta consulta = toEntity(consultaRequest,cita);
+        cita.setEstado(Estado.ATENDIDA);
 
         consultaRepository.save(consulta);
 
-        cita.setEstado("ATENDIDA");
-        citaRepository.save(cita);
+        return citaRepository.save(cita);
 
-        cita.setConsulta(consulta);
-
-        return toCitaDetailDto(cita);
     }
 
-    public List<CitaListDto> agendaDiaria(Long profesionalId, LocalDate dia) {
-        LocalDateTime inicio = dia.atStartOfDay();
-        LocalDateTime fin = dia.plusDays(1).atStartOfDay();
-
-        return citaRepository.agendaDiariaProfesional(profesionalId, inicio, fin)
-                .stream()
-                .map(this::toCitaListDto)
-                .toList();
+    public static Consulta toEntity(CreateConsultaRequest consulta, Cita cita){
+        return Consulta.builder()
+                .observaciones(consulta.observaciones())
+                .diagnostico(consulta.diagnostico())
+                .fecha(consulta.fecha())
+                .cita(cita)
+                .build();
     }
 
-
-    private CitaListDto toCitaListDto(Cita c) {
-        return new CitaListDto(
-                c.getId(),
-                c.getFechaYhora(),
-                c.getEstado(),
-                c.getPaciente().getNombre(),
-                c.getProfesional().getNombre()
-        );
+    public Cita toEntity(CreateCitaRequest requestCreate, Paciente paciente,Profesional profesional){
+        return Cita.builder()
+                .fechaHora(requestCreate.fechaHora())
+                .estado(Estado.PROGRAMADA)
+                .paciente(paciente)
+                .profesional(profesional)
+                .build();
     }
 
-    private CitaDetailDto toCitaDetailDto(Cita c) {
-        return new CitaDetailDto(
-                c.getId(),
-                c.getFechaYhora(),
-                c.getEstado(),
-                new PacienteSimpleDto(
-                        c.getPaciente().getId(),
-                        c.getPaciente().getNombre(),
-                        c.getPaciente().getEmail()
-                ),
-                new ProfesionalSimpleDto(
-                        c.getProfesional().getId(),
-                        c.getProfesional().getNombre(),
-                        c.getProfesional().getEspecialidad()
-                ),
-                (c.getConsulta() == null) ? null : new ConsultaSimpleDto(
-                        c.getConsulta().getId(),
-                        c.getConsulta().getObservaciones(),
-                        c.getConsulta().getDiagnostico(),
-                        c.getConsulta().getFecha()
-                )
-        );
-    }
 }
